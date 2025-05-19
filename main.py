@@ -1,130 +1,189 @@
-import os
+#!/usr/bin/env python3
 import platform
 import subprocess
 import threading
 import logging
-from datetime import datetime
-from scapy.all import sniff, TCP, IP
+from scapy.all import sniff, IP
 import geoip2.database
 import ipaddress
 
-# Chemins des fichiers de logs
-LOG_BANS = 'bans.log'
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION GLOBALE
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fichiers de logs : bans.log pour les blocages, allowed_ips.log pour les connexions autorisées
+LOG_BANS    = 'bans.log'
 LOG_ALLOWED = 'allowed_ips.log'
 
-# Configuration des logs : format d'affichage, niveau, etc.
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s',
+# Chemin vers la base GeoIP2 (.mmdb) pour la géolocalisation
+GEOIP_DB    = "/home/kalii/GeoLite2-Country.mmdb"
+
+# IP de confiance (whitelist) : on leur donne un peu plus de tolérance
+whitelist = {
+    "192.168.80.1",
+    "192.168.80.2",
+    "192.168.80.133",  # mon Kali
+}
+
+# VLANs (plages CIDR) à bloquer automatiquement
+vlans_to_block = [
+    ipaddress.IPv4Network("10.31.10.0/24"),
+    ipaddress.IPv4Network("10.31.20.0/24"),
+]
+
+# Seuil de tentatives avant bannissement
+THRESHOLD_BAD  = 1   # pour IP non-whitelistées
+THRESHOLD_GOOD = 3   # pour IP whitelistées
+
+# Structures en mémoire pour suivre les IP
+banned_ips  = set()  # IP déjà bloquées
+ip_attempts = {}     # compteur de tentatives par IP
+lock        = threading.Lock()  # pour éviter les conflits en multithreading
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION DES LOGGERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Formatter commun qui ajoute date et heure à chaque message
+formatter = logging.Formatter(
+    fmt='%(asctime)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# Logger pour les IP bannies
+# Logger pour les bannissements
 ban_logger = logging.getLogger("ban")
-ban_handler = logging.FileHandler(LOG_BANS)
-ban_logger.addHandler(ban_handler)
+ban_logger.setLevel(logging.INFO)
+ban_logger.propagate = False  # ne pas répercuter au logger racine
 
-# Logger pour les IP autorisées ou surveillées
+# FileHandler pour écrire dans bans.log
+ban_fh = logging.FileHandler(LOG_BANS)
+ban_fh.setFormatter(formatter)
+ban_logger.addHandler(ban_fh)
+
+# StreamHandler pour afficher en console le même message
+ban_ch = logging.StreamHandler()
+ban_ch.setFormatter(formatter)
+ban_logger.addHandler(ban_ch)
+
+# Logger pour les IP autorisées/surveillées
 allowed_logger = logging.getLogger("allowed")
-allowed_handler = logging.FileHandler(LOG_ALLOWED)
-allowed_logger.addHandler(allowed_handler)
+allowed_logger.setLevel(logging.INFO)
+allowed_logger.propagate = False
 
-# Chemin vers la base GeoIP (penser à l’adapter selon l’emplacement local)
-GEOIP_DB = "/home/kalii/GeoLite2-Country_20250516"
+# FileHandler pour écrire dans allowed_ips.log
+allowed_fh = logging.FileHandler(LOG_ALLOWED)
+allowed_fh.setFormatter(formatter)
+allowed_logger.addHandler(allowed_fh)
 
-# Structures en mémoire pour garder les IP traitées
-banned_ips = set()           # Ensemble des IP déjà bannies
-ip_attempts = {}             # Dictionnaire des tentatives par IP
-whitelist = {"192.168.80.1", "192.168.80.2"}  # IP autorisées (liste blanche)
-lock = threading.Lock()      # Pour sécuriser les accès en multithreading
 
-# Réseaux (VLANs) à bloquer par défaut
-vlans_to_block = [
-    ipaddress.IPv4Network("10.31.10.0/24"),
-    ipaddress.IPv4Network("10.31.20.0/24")
-]
+# ─────────────────────────────────────────────────────────────────────────────
+# FONCTIONS PRINCIPALES
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Seuils de tentatives
-THRESHOLD_BAD = 1     # Nombre de tentatives max pour IP non whitelistée avant ban
-THRESHOLD_GOOD = 3    # Pour IP dans la whitelist, on autorise un peu plus
-
-# Fonction pour bannir une IP via iptables
-def ban_ip(ip):
-    with lock:  # Pour éviter les accès concurrents à banned_ips
+def ban_ip(ip: str):
+    """
+    Bloque l'IP avec iptables puis logue :
+    - date/heure
+    - IP
+    - OS (Linux, etc.)
+    - nombre de tentatives
+    """
+    with lock:
         if ip in banned_ips:
-            return  # Déjà banni, inutile de recommencer
+            return  # déjà bloquée, on sort
+        attempts = ip_attempts.get(ip, 0)  # récupère le nombre de tentatives
         try:
-            # Ajout d’une règle iptables pour bloquer l’IP
+            # Ajoute une règle iptables pour DROP les paquets venant de l'IP
             subprocess.run(['iptables', '-A', 'INPUT', '-s', ip, '-j', 'DROP'], check=True)
-            banned_ips.add(ip)
-            ban_logger.info(f"IP bannie : {ip} sur {platform.system()}")
-            print(f"[INFO] IP bannie : {ip}")
+            banned_ips.add(ip)  # marque comme bloquée
+            # Message unique combinant toutes les infos
+            msg = f"IP bannie : {ip} - OS : {platform.system()} - Tentatives : {attempts}"
+            ban_logger.info(msg)
         except subprocess.CalledProcessError as e:
-            # En cas d’erreur avec iptables
-            ban_logger.error(f"Erreur bannissement de {ip} : {e}")
-            print(f"[ERREUR] Bannissement échoué : {ip}")
+            ban_logger.error(f"Échec bannissement {ip} : {e}")
 
-# Vérifie si l'IP appartient à un VLAN interdit
-def ip_in_banned_vlan(ip):
+
+def ip_in_banned_vlan(ip: str) -> bool:
+    """
+    Retourne True si l'IP appartient à l'une des plages VLAN interdites.
+    """
     ip_obj = ipaddress.IPv4Address(ip)
     return any(ip_obj in vlan for vlan in vlans_to_block)
 
-# Vérifie si l'IP vient de France via GeoIP
-def ip_from_france(ip):
+
+def ip_from_france(ip: str) -> bool:
+    """
+    - Si IP privée (192.168.x.x, 10.x.x.x...), on la considère "locale" → True
+    - Sinon on interroge GeoIP2 pour vérifier si c'est en France
+    """
     try:
+        ip_obj = ipaddress.IPv4Address(ip)
+        if ip_obj.is_private:
+            return True  # IP interne, on autorise
+        # Lecture de la DB GeoIP
         with geoip2.database.Reader(GEOIP_DB) as reader:
-            response = reader.country(ip)
-            return response.country.iso_code == "FR"
-    except:
-        # Si la géoloc échoue, on considère l'IP comme suspecte
-        return False
+            return reader.country(ip).country.iso_code == "FR"
+    except Exception:
+        return False  # en cas d'erreur, on considère suspect
 
-# Fonction appelée pour chaque paquet capturé
+
 def analyse_packet(packet):
-    if packet.haslayer(IP):
-        ip_layer = packet.getlayer(IP)
-        ip_source = ip_layer.src
+    """
+    Pour chaque paquet capturé :
+    1) ignore si déjà bannie
+    2) bannit si VLAN interdit ou IP hors-France
+    3) sinon incrémente le compteur de tentatives
+    4) applique les seuils whitelist/non-whitelist
+    """
+    if not packet.haslayer(IP):
+        return
 
-        # Si l’IP est déjà bannie, on ne fait rien
-        if ip_source in banned_ips:
-            return
+    ip_src = packet[IP].src
 
-        # Si l’IP est dans un VLAN interdit ou ne vient pas de France → on bannit direct
-        if ip_in_banned_vlan(ip_source) or not ip_from_france(ip_source):
-            ban_ip(ip_source)
-            return
+    # 1) si déjà bloquée, on ne fait rien
+    if ip_src in banned_ips:
+        return
 
-        with lock:
-            # Mise à jour du nombre de tentatives de connexion de l'IP
-            if ip_source not in ip_attempts:
-                ip_attempts[ip_source] = 1
-            else:
-                ip_attempts[ip_source] += 1
+    # 2) bannissement direct pour VLAN interdit ou géoloc hors-France
+    if ip_in_banned_vlan(ip_src) or not ip_from_france(ip_src):
+        ban_ip(ip_src)
+        return
 
-            # Traitement des IP whitelistées
-            if ip_source in whitelist:
-                if ip_attempts[ip_source] >= THRESHOLD_GOOD:
-                    ban_ip(ip_source)
-                else:
-                    allowed_logger.info(f"{ip_source} autorisée ({ip_attempts[ip_source]} tentative(s))")
-            else:
-                # Pour les IP normales
-                if ip_attempts[ip_source] >= THRESHOLD_BAD:
-                    ban_ip(ip_source)
-                else:
-                    allowed_logger.info(f"{ip_source} non whitelistée - {ip_attempts[ip_source]} tentative(s)")
+    # 3) comptage des tentatives
+    with lock:
+        ip_attempts[ip_src] = ip_attempts.get(ip_src, 0) + 1
+        attempts = ip_attempts[ip_src]
 
-# Démarre le sniffing réseau sur le port 22 (SSH)
+    # 4) application des seuils selon whitelist
+    if ip_src in whitelist:
+        if attempts >= THRESHOLD_GOOD:
+            ban_ip(ip_src)
+        else:
+            allowed_logger.info(f"{ip_src} autorisée ({attempts} tentative(s))")
+    else:
+        if attempts >= THRESHOLD_BAD:
+            ban_ip(ip_src)
+        else:
+            allowed_logger.info(f"{ip_src} non-whitelistée - {attempts} tentative(s)")
+
+
 def start_sniffing():
-    print("[INFO] Surveillance réseau sur le port 22 activée...")
+    """
+    Démarre le sniffing Scapy sur le port SSH (22).
+    """
+    ban_logger.info("Surveillance réseau sur le port 22 activée…")
     sniff(filter="tcp port 22", prn=analyse_packet, store=0)
 
-# Lancement principal du programme
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POINT D'ENTRÉE
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     try:
         start_sniffing()
     except KeyboardInterrupt:
-        print("\n[INFO] Arrêt manuel.")
+        ban_logger.info("Arrêt manuel.")
     except Exception as e:
         ban_logger.error(f"Erreur inattendue : {e}")
-        print(f"[ERREUR] {e}")
