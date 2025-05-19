@@ -1,10 +1,10 @@
 # 4ESGI_Python
 
-CASAGRANDE Michael
-VALLADE Allan
-CHAMBRE Ryan
-OUALI Mohammed
-FALANDRY Enzo
+- CASAGRANDE Michael
+- VALLADE Allan
+- CHAMBRE Ryan
+- OUALI Mohammed
+- FALANDRY Enzo
 
 ### Description
 Ce script Python surveille les connexions SSH (port 22) en temps réel et applique automatiquement des règles de bannissement via iptables selon plusieurs critères :
