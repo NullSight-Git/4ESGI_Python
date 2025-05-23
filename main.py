@@ -1,5 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# - Description  : Ce code implémente la fonctionnalité sélectionnée selon les spécifications fournies.
+# - Description  : Ce script surveille le trafic réseau sur le port SSH (22) et bannit automatiquement les adresses IP suspectes.
+#                  Il utilise Scapy pour capturer les paquets, GeoIP2 pour la géolocalisation, et iptables pour bloquer les IP.
+#                  Les tentatives sont journalisées, avec une gestion différenciée pour les IP de confiance (whitelist).
 # - Version      : v1.0
 # - Authors      : VALLADE Allan,
 #                  CASAGRANDE Michael,
