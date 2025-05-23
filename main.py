@@ -1,3 +1,13 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# - Description  : Ce code implémente la fonctionnalité sélectionnée selon les spécifications fournies.
+# - Version      : v1.0
+# - Authors      : VALLADE Allan,
+#                  CASAGRANDE Michael,
+#                  OUALI Mohamed,
+#                  CHAMBRE Ryan,
+#                  FALANDRY Enzo
+# ─────────────────────────────────────────────────────────────────────────────
+
 #!/usr/bin/env python3
 import platform
 import subprocess
