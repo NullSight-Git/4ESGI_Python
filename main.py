@@ -1,13 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# - Description  : Ce script surveille le trafic réseau sur le port SSH (22) et bannit automatiquement les adresses IP suspectes.
-#                  Il utilise Scapy pour capturer les paquets, GeoIP2 pour la géolocalisation, et iptables pour bloquer les IP.
-#                  Les tentatives sont journalisées, avec une gestion différenciée pour les IP de confiance (whitelist).
-# - Version      : v1.0
-# - Authors      : VALLADE Allan,
-#                  CASAGRANDE Michael,
-#                  OUALI Mohamed,
-#                  CHAMBRE Ryan,
-#                  FALANDRY Enzo
+# Description  : Ce script surveille le trafic réseau sur le port SSH (22) et bannit automatiquement les adresses IP suspectes.
+#                Il utilise Scapy pour capturer les paquets, GeoIP2 pour la géolocalisation, et iptables pour bloquer les IP.
+#                Les tentatives sont journalisées, avec une gestion différenciée pour les IP de confiance (whitelist).
+# Date         : 2023-10-12
+# Last Update  : 2023-10-12
+# Version      : v1.0
+# Authors      : VALLADE Allan,
+#                CASAGRANDE Michael,
+#                OUALI Mohamed,
+#                CHAMBRE Ryan,
+#                FALANDRY Enzo
 # ─────────────────────────────────────────────────────────────────────────────
 
 #!/usr/bin/env python3
