@@ -36,6 +36,7 @@ Ce script Python surveille les connexions SSH (port 22) en temps réel et appliq
   
 ![image](https://github.com/user-attachments/assets/6f05b7c2-f528-4eac-b43b-d4da8f77f34f)
 
+
 # DEMANDE ET CONSIGNE
 
 ### TP noté – IDS Simplifié : Détection et Bannissement d’IP suspectes en Python
